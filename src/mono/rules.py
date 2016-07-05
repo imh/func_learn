@@ -1,5 +1,10 @@
 from type_sys import FunType, BoolType, IntType, Name, Expression
 import numpy as np
+import chainer
+from chainer import cuda, Function, gradient_check, Variable, optimizers, serializers, utils
+from chainer import Link, Chain, ChainList
+import chainer.functions as F
+import chainer.links as L
 
 class Closure(object):
     def __init__(self, name, body, env):
@@ -8,6 +13,7 @@ class Closure(object):
         self.env = env
 
 def mk_new_name_of_type(params, context, scope, type_def):
+
     ttd = type(type_def)
     if ttd == FunType:
         pref = 'f'
@@ -23,7 +29,7 @@ def mk_new_name_of_type(params, context, scope, type_def):
         if any([var.name == name for var in scope]):
             i += 1
         else:
-            return Name(name, type_def), context
+            return Name(name, type_def, context['state']), context
 
 def mk_new_int(params, context):
     return np.random.randint(1000), context
@@ -40,7 +46,25 @@ class LanguageRule(object):
 
 def choose_var_of_type(spec, context, scope, type_def):
     compatible_scope = [var for var in scope if var.type_def.can_be(type_def)]
-    return np.random.choice(compatible_scope), context
+    scope = list(scope)
+
+    var_ndxs = [i for i in range(len(scope)) if scope[i].type_def.can_be(type_def)]
+    var_embeddings = [scope[i].vec for i in var_ndxs]
+    var_lprobs = [F.matmul(vec, F.transpose(context['state'])) for vec in var_embeddings]
+    normalizer = Variable(np.array([[0]], dtype=np.float32))
+    for vlp in var_lprobs:
+        normalizer = normalizer + F.exp(vlp)
+    normalizer = F.log(normalizer)
+    var_lprobs = [vlp - normalizer for vlp in var_lprobs]
+    vlp_data = np.array([vlp.data for vlp in var_lprobs])[:,0,0]
+    ps = np.exp(vlp_data)
+    ps /= np.sum(ps)
+
+    ndx = np.random.choice(range(len(ps)), p=ps)
+    lp = var_lprobs[ndx]
+    var = scope[var_ndxs[ndx]]
+    context['lp'] += lp[:,0]
+    return var, context
 
 def spec_lookup(spec, expr):
     return next(x for x in spec['rules'] if x.rule_name == expr.constructor)
@@ -359,19 +383,24 @@ inteq = LanguageRule('inteq', make_inteq, inteq_can_make, eval_or)
 #     return True
 # head = LanguageRule('tuple', make_tuple_of_type, tuple_can_make)
 
-def prob_from_rule(rule, context, spec):
-    rule_key = spec['choice_keys'][rule]
-    rule_choice_vec = spec['choice'][rule_key]
-    logodds = rule_choice_vec.dot(context['choice'])
-    return 1/(1+np.exp(-logodds))
-
 def mk_expression_of_type(spec, context, scope, type_def):
     if context['depth'] > context['max_depth']:
         return Expression('depth_exceeded', type_def=type_def), context, False
-    candidates = [rule for rule in spec['rules'] if rule.can_make(scope, type_def)]
-    expr_probs = np.array([prob_from_rule(rule, context, spec) for rule in candidates])
-    expr_probs /= np.sum(expr_probs)
-    i = np.random.choice(range(len(expr_probs)), p=expr_probs)
-    rule = candidates[i]
-    p = expr_probs[i]
+    rule_ndxs = [i for i in range(len(spec['rules']))
+                   if spec['rules'][i].can_make(scope, type_def)]
+    vrule_ndxs = Variable(np.array(rule_ndxs, dtype=np.int32))
+    rule_embeddings = context['model'].rule_embeddings(vrule_ndxs)
+    rule_lprobs = F.matmul(rule_embeddings, F.transpose(context['state']))
+    normalizer = context['model'].normalize(rule_lprobs)
+    rule_lprobs = rule_lprobs - F.BroadcastTo((len(rule_ndxs), 1))(normalizer)
+    rps = np.exp(rule_lprobs.data)[:,0]
+    rps /= np.sum(rps)
+    ndx = np.random.choice(range(len(rps)), p=rps)
+    lp = rule_lprobs[ndx,:]
+    rule_ndx = rule_ndxs[ndx]
+    rule_embedding = rule_embeddings[[ndx],:]
+    rule = spec['rules'][rule_ndx]
+    context['lp'] += lp
+    context['state'] = context['model'].state2state(context['state']) + context['model'].choice2state(rule_embedding)
+    context['state'] = F.tanh(context['state'])
     return rule.make_expr(spec, context, scope, type_def)

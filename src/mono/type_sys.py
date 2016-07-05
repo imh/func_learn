@@ -76,9 +76,10 @@ class Type(object):
         return type(self) == TupleType
 
 class Name(object):
-    def __init__(self, name, type_def):
+    def __init__(self, name, type_def, vec):
         self.name = name
         self.type_def = type_def
+        self.vec = vec
 
 class FunType(Type):
     def __init__(self, in_type, out_type):
