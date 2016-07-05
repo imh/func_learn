@@ -60,7 +60,9 @@ class LossComputer(object):
         self.lp = lp
         self.errs = np.array(errs)
 
+i = 0
 while True:
+    i += 1
     print 'starting epoch {}'.format(i)
     tries = 0
     context = dict()
@@ -81,7 +83,6 @@ while True:
         if ok:
             print '{:>10}'.format(tries), e.pstr()
             for x1, x2, y in zip(x1s, x2s, ys):
-                x, y = np.random.randint(1,11, 2)
                 x1e = Expression(constructor='int', type_def=IntType(), val=x1)
                 x2e = Expression(constructor='int', type_def=IntType(), val=x2)
                 outer_app = Expression(constructor='app',
