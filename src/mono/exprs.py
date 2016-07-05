@@ -47,6 +47,7 @@ class ProgModel(Chain):
 model = ProgModel(1, 10)
 optimizer = optimizers.SGD(lr=0.000001)
 optimizer.setup(model)
+optimizer.add_hook(chainer.optimizer.GradientClipping(1.0))
 
 x1s = np.random.randint(-100, 100, size=100)
 x2s = np.random.randint(-100, 100, size=100)
@@ -64,11 +65,13 @@ for i in xrange(2000):
     context = dict()
     context['model'] = model
     # context['choice'] = np.array(0.5)
-    context['max_depth'] = 3
+    context['max_depth'] = 2
 
     lcs = []
     optimizer.zero_grads()
-    for tries in xrange(100):
+    n_ok = 0
+    tries = 0
+    while not (n_ok >= 10 and tries >= 100):
         context['depth'] = 0
         context['state'] = model.init_state(Variable(np.array([0], dtype=np.int32)))
         context['lp'] = 0
@@ -88,21 +91,27 @@ for i in xrange(2000):
                     fun=outer_app, arg=x2e)
                 yhat = app.eval_expr(eval_spec, inner_app, empty_env())
                 errs.append((yhat - y)**2)
+            n_ok += 1
+        tries += 1
         lcs.append(LossComputer(ok, context['lp'], errs))
     ok_errs = [lc.errs for lc in lcs if lc.ok]
     if len(ok_errs) > 0:
         print 'ok, update'
         mean_ok_errs = np.mean(ok_errs)
         max_ok_errs = np.max(ok_errs)
+        if max_ok_errs > 5e3:
+            scal = 1.0 #5e3 / max_ok_errs
+        else:
+            scal = 1.0
         print 'computed errs'
         loss = Variable(np.array([0], dtype=np.float32))
         print 'adding losses'
+        n_ok = len([lc for lc in lcs if lc.ok])
         for lc in lcs:
-            if lc.ok:
-                loss += (np.mean(lc.errs) - mean_ok_errs) * lc.lp
-            else:
-                loss += (max_ok_errs+10 - mean_ok_errs) * lc.lp
+            err = np.mean(lc.errs) if lc.ok else max_ok_errs+100
+            loss += float(err - mean_ok_errs) * lc.lp
         loss /= len(lcs)
+
         print 'added losses'
         print 'LOSS_OK (mean={}, max={}):'.format(mean_ok_errs, max_ok_errs), '{} / {} ok'.format(len([lc for lc in lcs if lc.ok]), len(lcs)),
         loss.backward()
