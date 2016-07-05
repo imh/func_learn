@@ -42,10 +42,11 @@ class ProgModel(Chain):
             rule_embeddings=L.EmbedID(len(spec['rules']), dim),
             init_state=L.EmbedID(n_progs, dim),
             state2state=L.Linear(dim, dim),
-            choice2state=L.Linear(dim, dim)
+            choice2state=L.Linear(dim, dim),
+            state2var=L.Linear(dim, dim)
             )
-model = ProgModel(1, 10)
-optimizer = optimizers.SGD(lr=0.000001)
+model = ProgModel(n_progs=1, dim=5)
+optimizer = optimizers.SGD(lr=0.001)
 optimizer.setup(model)
 optimizer.add_hook(chainer.optimizer.GradientClipping(1.0))
 
@@ -59,7 +60,7 @@ class LossComputer(object):
         self.lp = lp
         self.errs = np.array(errs)
 
-for i in xrange(2000):
+while True:
     print 'starting epoch {}'.format(i)
     tries = 0
     context = dict()

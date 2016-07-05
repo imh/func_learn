@@ -29,6 +29,7 @@ def mk_new_name_of_type(params, context, scope, type_def):
         if any([var.name == name for var in scope]):
             i += 1
         else:
+            name_vec = context['model'].state2var(context['state'])
             return Name(name, type_def, context['state']), context
 
 def mk_new_int(params, context):
