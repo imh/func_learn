@@ -34,21 +34,28 @@ spec['rules'] = [var,
 eval_spec = dict(spec)
 eval_spec['rules'] = eval_spec['rules'] + [app, bool_expr, int_expr]
 
+np.random.seed(1)
 
 class ProgModel(Chain):
     def __init__(self, n_progs, dim):
         self.normalize = F.LogSumExp()
+        self.dim = dim
+        self.n_progs = n_progs
         super(ProgModel, self).__init__(
             rule_embeddings=L.EmbedID(len(spec['rules']), dim),
             init_state=L.EmbedID(n_progs, dim),
             state2state=L.Linear(dim, dim),
             choice2state=L.Linear(dim, dim),
-            state2var=L.Linear(dim, dim)
+            state2var=L.Linear(dim, dim),
+            state2var_choice=L.Linear(dim, dim)
             )
-model = ProgModel(n_progs=1, dim=5)
-optimizer = optimizers.SGD(lr=0.001)
+model = ProgModel(n_progs=1, dim=10)
+optimizer = optimizers.SGD(lr=0.01)
 optimizer.setup(model)
-optimizer.add_hook(chainer.optimizer.GradientClipping(1.0))
+optimizer.add_hook(chainer.optimizer.GradientClipping(20.0))
+optimizer.add_hook(chainer.optimizer.WeightDecay(0.999))
+model.to_gpu()
+
 
 x1s = np.random.randint(-100, 100, size=100)
 x2s = np.random.randint(-100, 100, size=100)
@@ -74,14 +81,14 @@ while True:
     optimizer.zero_grads()
     n_ok = 0
     tries = 0
-    while not (n_ok >= 10 and tries >= 100):
+    while not (n_ok >= 100 and tries >= 300):
         context['depth'] = 0
-        context['state'] = model.init_state(Variable(np.array([0], dtype=np.int32)))
+        context['state'] = model.init_state(Variable(cuda.to_gpu(np.array([0], dtype=np.int32))))
         context['lp'] = 0
         e, context, ok = mk_expression_of_type(spec, context, set(), FunType(IntType(), FunType(IntType(), IntType())))
         errs = []
         if ok:
-            print '{:>10}'.format(tries), e.pstr()
+            # print '{:>10}'.format(tries), e.pstr()
             for x1, x2, y in zip(x1s, x2s, ys):
                 x1e = Expression(constructor='int', type_def=IntType(), val=x1)
                 x2e = Expression(constructor='int', type_def=IntType(), val=x2)
@@ -97,24 +104,27 @@ while True:
         tries += 1
         lcs.append(LossComputer(ok, context['lp'], errs))
     ok_errs = [lc.errs for lc in lcs if lc.ok]
+    ok_err_means = [np.mean(err) for err in ok_errs]
     if len(ok_errs) > 0:
-        print 'ok, update'
-        mean_ok_errs = np.mean(ok_errs)
-        max_ok_errs = np.max(ok_errs)
+        # print 'ok, update'
+        mean_ok_errs = np.mean(ok_err_means)
+        max_ok_errs = np.max(ok_err_means)
+        min_ok_errs = np.min(ok_err_means)
+        not_ok_err = max_ok_errs + (max_ok_errs - min_ok_errs) + 500
         if max_ok_errs > 5e3:
             scal = 1.0 #5e3 / max_ok_errs
         else:
             scal = 1.0
-        print 'computed errs'
-        loss = Variable(np.array([0], dtype=np.float32))
-        print 'adding losses'
+        # print 'computed errs'
+        loss = Variable(cuda.to_gpu(np.array([0], dtype=np.float32)))
+        # print 'adding losses'
         n_ok = len([lc for lc in lcs if lc.ok])
         for lc in lcs:
-            err = np.mean(lc.errs) if lc.ok else max_ok_errs+100
+            err = np.mean(lc.errs) if lc.ok else not_ok_err
             loss += float(err - mean_ok_errs) * lc.lp
         loss /= len(lcs)
 
-        print 'added losses'
-        print 'LOSS_OK (mean={}, max={}):'.format(mean_ok_errs, max_ok_errs), '{} / {} ok'.format(len([lc for lc in lcs if lc.ok]), len(lcs)),
+        # print 'added losses'
+        print 'LOSS_OK (mean={}, max={}):'.format(mean_ok_errs, max_ok_errs), '{} / {} ok.'.format(len([lc for lc in lcs if lc.ok]), len(lcs)),
         loss.backward()
         optimizer.update()

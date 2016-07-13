@@ -51,13 +51,14 @@ def choose_var_of_type(spec, context, scope, type_def):
 
     var_ndxs = [i for i in range(len(scope)) if scope[i].type_def.can_be(type_def)]
     var_embeddings = [scope[i].vec for i in var_ndxs]
-    var_lprobs = [F.matmul(vec, F.transpose(context['state'])) for vec in var_embeddings]
-    normalizer = Variable(np.array([[0]], dtype=np.float32))
+    var_choice = F.transpose(context['model'].state2var_choice(context['state']))
+    var_lprobs = [F.matmul(vec, var_choice) for vec in var_embeddings]
+    normalizer = Variable(cuda.to_gpu(np.array([[0]], dtype=np.float32)))
     for vlp in var_lprobs:
         normalizer = normalizer + F.exp(vlp)
     normalizer = F.log(normalizer)
     var_lprobs = [vlp - normalizer for vlp in var_lprobs]
-    vlp_data = np.array([vlp.data for vlp in var_lprobs])[:,0,0]
+    vlp_data = np.array([cuda.to_cpu(vlp.data) for vlp in var_lprobs])[:,0,0]
     ps = np.exp(vlp_data)
     ps /= np.sum(ps)
 
@@ -389,19 +390,19 @@ def mk_expression_of_type(spec, context, scope, type_def):
         return Expression('depth_exceeded', type_def=type_def), context, False
     rule_ndxs = [i for i in range(len(spec['rules']))
                    if spec['rules'][i].can_make(scope, type_def)]
-    vrule_ndxs = Variable(np.array(rule_ndxs, dtype=np.int32))
+    vrule_ndxs = Variable(cuda.to_gpu(np.array(rule_ndxs, dtype=np.int32)))
     rule_embeddings = context['model'].rule_embeddings(vrule_ndxs)
     rule_lprobs = F.matmul(rule_embeddings, F.transpose(context['state']))
     normalizer = context['model'].normalize(rule_lprobs)
     rule_lprobs = rule_lprobs - F.BroadcastTo((len(rule_ndxs), 1))(normalizer)
-    rps = np.exp(rule_lprobs.data)[:,0]
+    rps = np.exp(cuda.to_cpu(rule_lprobs.data))[:,0]
     rps /= np.sum(rps)
     ndx = np.random.choice(range(len(rps)), p=rps)
     lp = rule_lprobs[ndx,:]
     rule_ndx = rule_ndxs[ndx]
-    rule_embedding = rule_embeddings[[ndx],:]
+    rule_embedding = rule_embeddings[ndx,:]
     rule = spec['rules'][rule_ndx]
     context['lp'] += lp
-    context['state'] = context['model'].state2state(context['state']) + context['model'].choice2state(rule_embedding)
+    context['state'] = context['model'].state2state(context['state']) + context['model'].choice2state(F.BroadcastTo((1,context['model'].dim))(rule_embedding))
     context['state'] = F.tanh(context['state'])
     return rule.make_expr(spec, context, scope, type_def)
